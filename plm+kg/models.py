@@ -20,8 +20,8 @@ class HateClassifier(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.bert = BertModel.from_pretrained(args.plm_path, return_dict=True)
-        self.gru = nn.GRU(input_size=self.bert.config.hidden_size, hidden_size=512, num_layers=5,
-                          dropout=0.3, batch_first=True, bidirectional=True)
+        # self.gru = nn.GRU(input_size=self.bert.config.hidden_size, hidden_size=512, num_layers=5,
+        #                   dropout=0.3, batch_first=True, bidirectional=True)
 
         # if "binary" in args.data_path:
         #     label_num = 2
