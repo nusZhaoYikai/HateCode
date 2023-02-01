@@ -55,22 +55,23 @@ def process(file_path):
         json.dump(postag, f, ensure_ascii=False)
 
 
-process(train_file)
-process(dev_file)
-process(test_file)
+if __name__ == '__main__':
+    process(train_file)
+    process(dev_file)
+    process(test_file)
 
-# 根据max_pos生成pos词典文件
-with open(os.path.join(data_dir, "pos_vocab.txt"), "w", encoding="utf-8") as f:
-    for i in range(max_pos + 1):
-        if i == max_pos:
-            f.write(str(i))
-        else:
-            f.write(str(i) + "\n")
+    # 根据max_pos生成pos词典文件
+    with open(os.path.join(data_dir, "pos_vocab.txt"), "w", encoding="utf-8") as f:
+        for i in range(max_pos + 1):
+            if i == max_pos:
+                f.write(str(i))
+            else:
+                f.write(str(i) + "\n")
 
-# 根据postag_vocab生成postag词典文件
-with open(os.path.join(data_dir, "postag_vocab.txt"), "w", encoding="utf-8") as f:
-    for i, tag in enumerate(postag_vocab):
-        if i == len(postag_vocab) - 1:
-            f.write(tag)
-        else:
-            f.write(tag + "\n")
+    # 根据postag_vocab生成postag词典文件
+    with open(os.path.join(data_dir, "postag_vocab.txt"), "w", encoding="utf-8") as f:
+        for i, tag in enumerate(postag_vocab):
+            if i == len(postag_vocab) - 1:
+                f.write(tag)
+            else:
+                f.write(tag + "\n")
