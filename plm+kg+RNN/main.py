@@ -8,9 +8,6 @@ import torch.optim as optim
 from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, classification_report
 from tqdm import tqdm
 
-# from openprompt.data_utils import InputExample
-# from openprompt.prompts import ManualTemplate
-# from openprompt.plms import load_plm
 from data_utils import load_data_agument
 from models import *
 from utils import *
