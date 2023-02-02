@@ -12,7 +12,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import f1_score, precision_score, recall_score, classification_report
+from sklearn.metrics import f1_score, precision_score, recall_score, classification_report, accuracy_score
 from torch import optim
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -97,81 +97,65 @@ class SVMmodel(nn.Module):
 #     def score(self, x, y):
 #         return self.fc.score(x, y)
 
-
 def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_path="./out_models"):
     model.train()
     pbar = tqdm(enumerate(train_loader), total=len(train_loader))
-    print("start train epoch: {}".format(epoch))
-    for i, (input_ids, attention_mask, label) in pbar:
+    print("start train epoch: {}".format(epoch), flush=True)
+    for i, batch in pbar:
+        # print(batch)
+        input_ids, attention_mask, label = batch
         input_ids = input_ids.to(device)
         label = label.to(device)
         optimizer.zero_grad()
         loss, logits = model(input_ids, label=label)
+        if torch.cuda.device_count() > 1:
+            loss = torch.mean(loss)
         loss.backward()
         optimizer.step()
         pbar.set_description(f"train loss: {loss.item():.4f}")
         pbar.update(1)
-    # 将train_loader中的数据取出来,并且转换成numpy格式,然后拼接成一个大的矩阵
-    # all_input_ids = []
-    # # all_attention_mask = []
-    # all_labels = []
-    # for i, (input_ids, attention_mask, label) in enumerate(train_loader):
-    #     all_input_ids.extend(input_ids.numpy().tolist())
-    #     # all_attention_mask.extend(attention_mask.numpy().tolist())
-    #     all_labels.extend(label.numpy().tolist())
-    # all_input_ids = np.array(all_input_ids)
-    # # all_attention_mask = np.array(all_attention_mask)
-    # all_labels = np.array(all_labels)
-    # model.fit(all_input_ids, all_labels)
-    #
-    # print("start eval epoch: {}".format(epoch))
-    #
-    # all_dev_input_ids = []
-    # # all_dev_attention_mask = []
-    # all_dev_labels = []
-    # for i, (input_ids, attention_mask, label) in enumerate(dev_loader):
-    #     all_dev_input_ids.extend(input_ids.numpy().tolist())
-    #     # all_dev_attention_mask.extend(attention_mask.numpy().tolist())
-    #     all_dev_labels.extend(label.numpy().tolist())
-    # all_dev_input_ids = np.array(all_dev_input_ids)
-    # # all_dev_attention_mask = np.array(all_dev_attention_mask)
-    # all_dev_labels = np.array(all_dev_labels)
-    # preds = model.predict(all_dev_input_ids)
-    # eval_result = {
-    #     "acc": accuracy_score(all_dev_labels, preds),
-    #     "f1": f1_score(all_dev_labels, preds, average='macro'),
-    #     "precision": precision_score(all_dev_labels, preds, average='macro'),
-    #     "recall": recall_score(all_dev_labels, preds, average='macro')
-    # }
-    # # print(f"eval acc: {accuracy_score(all_dev_labels, preds)}, f1: {f1_score(all_dev_labels, preds, average='macro')}")
-    # print(f"classification report: {classification_report(all_dev_labels, preds)}")
+
     model.eval()
     with torch.no_grad():
         correct = 0
         total = 0
-        pbar = tqdm(dev_loader)
+        pbar = tqdm(enumerate(dev_loader), total=len(dev_loader))
         all_labels = []
         all_preds = []
-        for i, (input_ids, attention_mask, label) in enumerate(pbar):
+        confusion = torch.zeros(3, 3, dtype=torch.long)
+        for i, batch in pbar:
+            input_ids, attention_mask, label = batch
             input_ids = input_ids.to(device)
             label = label.to(device)
-            _, logits = model(input_ids)
+            optimizer.zero_grad()
+            _, logits = model(input_ids, label=label)
             pred = torch.argmax(logits, dim=1)
             all_labels.extend(label.cpu().numpy().tolist())
             all_preds.extend(pred.cpu().numpy().tolist())
             correct += torch.sum(pred == label).item()
             total += len(label)
-            f1 = f1_score(label.cpu().numpy(), pred.cpu().numpy(), average='macro', zero_division=0)
-            presion = precision_score(label.cpu().numpy(), pred.cpu().numpy(), average='macro', zero_division=0)
-            recall = recall_score(label.cpu().numpy(), pred.cpu().numpy(), average='macro', zero_division=0)
+            f1 = f1_score(label.cpu().numpy(), pred.cpu().numpy(), average='macro')
+            presion = precision_score(label.cpu().numpy(), pred.cpu().numpy(), average='macro')
+            recall = recall_score(label.cpu().numpy(), pred.cpu().numpy(), average='macro')
             pbar.set_description("dev acc: {} f1: {} presion: {} recall: {}".format(correct / total, f1,
                                                                                     presion,
                                                                                     recall))
             pbar.update(1)
+        for j in range(len(all_labels)):
+            confusion[all_preds[j], all_labels[j]] += 1
+
+        print("Confusion matrix:")
+        print(confusion)
+        with open(f'./log/confusion_matrix.txt', 'a') as f:
+            f.write("#" * 30)
+            f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+            f.write(f"confusion matrix on dev set: \n")
+            f.write(str(confusion) + '\n')
+
         final_acc = correct / total
-        final_f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
-        final_presion = precision_score(all_labels, all_preds, average='macro', zero_division=0)
-        final_recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
+        final_f1 = f1_score(all_labels, all_preds, average='macro')
+        final_presion = precision_score(all_labels, all_preds, average='macro')
+        final_recall = recall_score(all_labels, all_preds, average='macro')
         eval_result = {
             'acc': final_acc,
             'f1': final_f1,
@@ -179,64 +163,207 @@ def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_
             'recall': final_recall
         }
         # print(eval_result)
+        # 记录此次实验的结果到result.txt文件中
+        with open('./log/result.txt', 'a') as f:
+            # 写入实验时间
+            # f.write("#" * 30 + "\n")
+            # f.write(" result:")
+            f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+            for key, value in eval_result.items():
+                f.write('{}: {}\t'.format(key, value))
+            f.write('\n')
 
-        print(
-            f"epoch {epoch} classification report: \n {classification_report(all_labels, all_preds, zero_division=0)}")
+        print(f"epoch {epoch} classification report: \n {classification_report(all_labels, all_preds)}")
         """
         在best_result.json中记录最好的实验结果
         """
 
-    # 以json文件的形式保存每一次的实验结果
-    if not os.path.exists(f'./log/best_{args.model_name}_result.json'):
-        with open(f'./log/best_{args.model_name}_result.json', 'w') as f:
-            json.dump(eval_result, f)
-    else:
-        # 保存每一次的实验结果
-        with open(f'./log/best_{args.model_name}_result.json', 'r') as f:
-            old_result = json.load(f)
-        # 比较新旧实验结果，如果新实验结果更好，则保存新实验结果
-        if eval_result["f1"] > old_result["f1"]:
-            # 保存模型checkpoint到args.save_path路径下
-            torch.save(model.state_dict(), save_path + f'best_{args.model_name}_model.pt')
-            # 保存新实验结果
+        # 以json文件的形式保存每一次的实验结果
+        if not os.path.exists(f'./log/best_{args.model_name}_result.json'):
             with open(f'./log/best_{args.model_name}_result.json', 'w') as f:
                 json.dump(eval_result, f)
+        else:
+            # 保存每一次的实验结果
+            with open(f'./log/best_{args.model_name}_result.json', 'r') as f:
+                old_result = json.load(f)
+            # 比较新旧实验结果，如果新实验结果更好，则保存新实验结果
+            if eval_result["f1"] > old_result["f1"]:
+                # 保存模型checkpoint到args.save_path路径下
+                torch.save(model.state_dict(), save_path + f'best_{args.model_name}_model.pt')
+                # 保存新实验结果
+                with open(f'./log/best_{args.model_name}_result.json', 'w') as f:
+                    json.dump(eval_result, f)
 
 
 def predict(model, test_loader, device):
-    # model.eval()
-
-    # all_input_ids = []
-    # all_labels = []
-    #
-    # for i, (input_ids, att, label) in enumerate(test_loader):
-    #     all_input_ids.extend(input_ids.numpy().tolist())
-    #     all_labels.extend(label.numpy().tolist())
-    # all_input_ids = np.array(all_input_ids)
-    # all_labels = np.array(all_labels)
-    # preds = model.predict(all_input_ids)
-    # print(f"test score: {model.score(all_input_ids, all_labels)}")
-    # print(f"test classification report: \n {classification_report(all_labels, preds)}")
     model.eval()
     with torch.no_grad():
-        preds = []
+        all_preds = []
         pbar = tqdm(test_loader)
-        labels = []
+        all_labels = []
+        confusion = torch.zeros(3, 3, dtype=torch.long)
         for i, (input_ids, attention_mask, label) in enumerate(pbar):
             input_ids = input_ids.to(device)
-            attention_mask = attention_mask.to(device)
+            # attention_mask = attention_mask.to(device)
             # label = label.to(device)
-            _, logits = model(input_ids, attention_mask)
+            _, logits = model(input_ids)
             pred = torch.argmax(logits, dim=1)
-            preds.extend(pred.cpu().numpy().tolist())
-            labels.extend(label.cpu().numpy().tolist())
-        # 计算acc\presion\recall\f1
-        # acc = accuracy_score(labels, preds)
-        # f1 = f1_score(labels, preds, average='macro')
-        # presion = precision_score(labels, preds, average='macro')
-        # recall = recall_score(labels, preds, average='macro')
-        # print("final test acc: {} f1: {} presion: {} recall: {}".format(acc, f1, presion, recall))
-        print(f"final test classification report: \n {classification_report(labels, preds, zero_division=0)}")
+            all_preds.extend(pred.cpu().numpy().tolist())
+            all_labels.extend(label.cpu().numpy().tolist())
+    for j in range(len(all_labels)):
+        confusion[all_preds[j], all_labels[j]] += 1
+
+    print("Confusion matrix:")
+    print(confusion)
+    with open(f'./log/test_confusion_matrix.txt', 'a') as f:
+        f.write("#" * 30)
+        f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+        f.write(f"confusion matrix on test set: \n")
+        f.write(str(confusion) + '\n')
+    # 计算acc\presion\recall\f1
+    acc = accuracy_score(all_labels, all_preds)
+    f1 = f1_score(all_labels, all_preds, average='macro')
+    precision = precision_score(all_labels, all_preds, average='macro')
+    recall = recall_score(all_labels, all_preds, average='macro')
+    eval_result = {
+        'acc': acc,
+        'f1': f1,
+        'precision': precision,
+        'recall': recall
+    }
+    # 记录此次实验的结果到result.txt文件中
+    with open('./log/result.txt', 'a') as f:
+        # 写入实验时间
+        # f.write("#" * 30 + "\n")
+        f.write("test result:\n")
+        f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+        for key, value in eval_result.items():
+            f.write('{}: {}\t'.format(key, value))
+        f.write('\n')
+
+        # 以json文件的形式保存每一次的实验结果
+        if not os.path.exists('./log/best_result.json'):
+            with open('./log/best_result.json', 'w') as f:
+                json.dump(eval_result, f)
+        else:
+            # 保存每一次的实验结果
+            with open('./log/best_result.json', 'r') as f:
+                old_result = json.load(f)
+            # 比较新旧实验结果，如果新实验结果更好，则保存新实验结果
+            if eval_result['f1'] > old_result['f1']:
+                # 保存模型checkpoint到args.save_path路径下
+                torch.save(model.state_dict(), './out_models/' + 'best_model.pt')
+                # 保存新实验结果
+                with open('./log/best_result.json', 'w') as f:
+                    json.dump(eval_result, f)
+    # print("final test acc: {} f1: {} presion: {} recall: {}".format(acc, f1, presion, recall))
+    print(f"final test classification report: \n {classification_report(all_labels, all_preds)}")
+
+
+# def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_path="./out_models"):
+#     model.train()
+#     pbar = tqdm(enumerate(train_loader), total=len(train_loader))
+#     print("start train epoch: {}".format(epoch))
+#     for i, (input_ids, attention_mask, label) in pbar:
+#         input_ids = input_ids.to(device)
+#         label = label.to(device)
+#         optimizer.zero_grad()
+#         loss, logits = model(input_ids, label=label)
+#         loss.backward()
+#         optimizer.step()
+#         pbar.set_description(f"train loss: {loss.item():.4f}")
+#         pbar.update(1)
+#     model.eval()
+#     with torch.no_grad():
+#         correct = 0
+#         total = 0
+#         pbar = tqdm(dev_loader)
+#         all_labels = []
+#         all_preds = []
+#         for i, (input_ids, attention_mask, label) in enumerate(pbar):
+#             input_ids = input_ids.to(device)
+#             label = label.to(device)
+#             _, logits = model(input_ids)
+#             pred = torch.argmax(logits, dim=1)
+#             all_labels.extend(label.cpu().numpy().tolist())
+#             all_preds.extend(pred.cpu().numpy().tolist())
+#             correct += torch.sum(pred == label).item()
+#             total += len(label)
+#             f1 = f1_score(label.cpu().numpy(), pred.cpu().numpy(), average='macro', zero_division=0)
+#             presion = precision_score(label.cpu().numpy(), pred.cpu().numpy(), average='macro', zero_division=0)
+#             recall = recall_score(label.cpu().numpy(), pred.cpu().numpy(), average='macro', zero_division=0)
+#             pbar.set_description("dev acc: {} f1: {} presion: {} recall: {}".format(correct / total, f1,
+#                                                                                     presion,
+#                                                                                     recall))
+#             pbar.update(1)
+#         final_acc = correct / total
+#         final_f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
+#         final_presion = precision_score(all_labels, all_preds, average='macro', zero_division=0)
+#         final_recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
+#         eval_result = {
+#             'acc': final_acc,
+#             'f1': final_f1,
+#             'precision': final_presion,
+#             'recall': final_recall
+#         }
+#         # print(eval_result)
+#
+#         print(
+#             f"epoch {epoch} classification report: \n {classification_report(all_labels, all_preds, zero_division=0)}")
+#         """
+#         在best_result.json中记录最好的实验结果
+#         """
+#
+#     # 以json文件的形式保存每一次的实验结果
+#     if not os.path.exists(f'./log/best_{args.model_name}_result.json'):
+#         with open(f'./log/best_{args.model_name}_result.json', 'w') as f:
+#             json.dump(eval_result, f)
+#     else:
+#         # 保存每一次的实验结果
+#         with open(f'./log/best_{args.model_name}_result.json', 'r') as f:
+#             old_result = json.load(f)
+#         # 比较新旧实验结果，如果新实验结果更好，则保存新实验结果
+#         if eval_result["f1"] > old_result["f1"]:
+#             # 保存模型checkpoint到args.save_path路径下
+#             torch.save(model.state_dict(), save_path + f'best_{args.model_name}_model.pt')
+#             # 保存新实验结果
+#             with open(f'./log/best_{args.model_name}_result.json', 'w') as f:
+#                 json.dump(eval_result, f)
+
+
+# def predict(model, test_loader, device):
+#     # model.eval()
+#
+#     # all_input_ids = []
+#     # all_labels = []
+#     #
+#     # for i, (input_ids, att, label) in enumerate(test_loader):
+#     #     all_input_ids.extend(input_ids.numpy().tolist())
+#     #     all_labels.extend(label.numpy().tolist())
+#     # all_input_ids = np.array(all_input_ids)
+#     # all_labels = np.array(all_labels)
+#     # preds = model.predict(all_input_ids)
+#     # print(f"test score: {model.score(all_input_ids, all_labels)}")
+#     # print(f"test classification report: \n {classification_report(all_labels, preds)}")
+#     model.eval()
+#     with torch.no_grad():
+#         preds = []
+#         pbar = tqdm(test_loader)
+#         labels = []
+#         for i, (input_ids, attention_mask, label) in enumerate(pbar):
+#             input_ids = input_ids.to(device)
+#             attention_mask = attention_mask.to(device)
+#             _, logits = model(input_ids, attention_mask)
+#             pred = torch.argmax(logits, dim=1)
+#             preds.extend(pred.cpu().numpy().tolist())
+#             labels.extend(label.cpu().numpy().tolist())
+#         # 计算acc\presion\recall\f1
+#         # acc = accuracy_score(labels, preds)
+#         # f1 = f1_score(labels, preds, average='macro')
+#         # presion = precision_score(labels, preds, average='macro')
+#         # recall = recall_score(labels, preds, average='macro')
+#         # print("final test acc: {} f1: {} presion: {} recall: {}".format(acc, f1, presion, recall))
+#         print(f"final test classification report: \n {classification_report(labels, preds, zero_division=0)}")
 
 
 def main():
@@ -269,6 +396,9 @@ def main():
     print("开始加载模型")
     vocab_size = 30522
     model = SVMmodel(vocab_size, 64, 64 * args.seq_len, 3)
+    if torch.cuda.device_count() > 1:
+        print("Let's use", torch.cuda.device_count(), "GPUs!")
+        model = nn.DataParallel(model)
     # 设置GPU
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
@@ -285,7 +415,7 @@ def main():
     if os.path.exists(save_path + f'best_{args.model_name}_model.pt'):
         model.load_state_dict(torch.load(save_path + f'best_{args.model_name}_model.pt'))
     print("开始预测")
-    predict(model, test_loader)
+    predict(model, test_loader, device)
     print(f"预测完成,总耗时{time.time() - t1}s")
 
 
