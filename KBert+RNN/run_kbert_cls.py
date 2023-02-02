@@ -3,13 +3,12 @@ import os
 import random
 import time
 import warnings
-
+import json
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from matplotlib import pyplot as plt
-from torch.optim import Adam
 from torch import optim
 from tqdm import tqdm
 from transformers import BertModel, BertTokenizer
@@ -154,7 +153,7 @@ class BertClassifier(nn.Module):
         self.use_vm = False if args.no_vm else True
         print("[BertClassifier] use visible_matrix: {}".format(self.use_vm))
 
-    def forward(self, src, postag_ids, label, mask, pos=None, vm=None):
+    def forward(self, src, postag_ids, label, att_mask, pos=None, vm=None):
         """
         Args:
             src: [batch_size x seq_length]
@@ -165,19 +164,31 @@ class BertClassifier(nn.Module):
         if self.args.encoder == "bert":
             if self.args.pretrain:
                 # postag_emb = self.postag_embedding(postag_ids)
-                emb = self.embedding(src, mask, pos)
+                emb = self.embedding(src, att_mask, pos)
                 # emb = emb + postag_emb
             else:
-                emb = self.embedding(src, postag_ids, mask, pos)
+                emb = self.embedding(src, postag_ids, att_mask, pos)
         else:
             emb = self.embedding(src)
         # Encoder.
         if not self.use_vm:
             vm = None
         if self.args.pretrain:
-            output = self.encoder(emb).last_hidden_state
+            if vm is None:
+                mask = (att_mask > 0). \
+                    unsqueeze(1). \
+                    repeat(1, emb.size(1), 1). \
+                    unsqueeze(1)
+                mask = mask.float()
+                mask = (1.0 - mask) * -10000.0
+            else:
+                mask = vm.unsqueeze(1)
+                mask = mask.float()
+                mask = (1.0 - mask) * -10000.0
+
+            output = self.encoder(emb, mask).last_hidden_state
         else:
-            output = self.encoder(emb, mask, vm)
+            output = self.encoder(emb, att_mask, vm)
         # Target.
         # print("output.shape: {}".format(output.shape))
         if not self.cnn:
@@ -783,7 +794,6 @@ def main():
             # only test on test dataset when the model train finished.
             # print("Start evaluation on test dataset.")
             # evaluate(args, True)
-
 
         # Evaluation phase.
         print("Final evaluation on the test dataset.")
