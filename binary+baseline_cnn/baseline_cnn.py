@@ -47,46 +47,42 @@ class MyDataset(Dataset):
         return output
 
 
-def get_dataloader(batch_size=768, max_len=128):
+def get_dataloader(batch_size=768):
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-
     print(f"vocab_size: {tokenizer.vocab_size}")
-    train_dataset = MyDataset(train_file, tokenizer, max_len=max_len)
-    dev_dataset = MyDataset(dev_file, tokenizer, max_len=max_len)
-    test_dataset = MyDataset(test_file, tokenizer, max_len=max_len)
+    train_dataset = MyDataset(train_file, tokenizer)
+    dev_dataset = MyDataset(dev_file, tokenizer)
+    test_dataset = MyDataset(test_file, tokenizer)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     dev_loader = torch.utils.data.DataLoader(dev_dataset, batch_size=batch_size, shuffle=False)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     return train_loader, dev_loader, test_loader
 
 
-class BiLstmModel(nn.Module):
+class CNNModel(nn.Module):
     def __init__(self, vocab_size, static=True):
-        super(BiLstmModel, self).__init__()
-        bidirectional = True
+        super(CNNModel, self).__init__()
         self.embedding = nn.Embedding(vocab_size, 768)
-        # self.lstm = nn.LSTM(768, 768, 2, batch_first=True, bidirectional=bidirectional)
-        self.rnn = nn.RNN(768, 768, 4, batch_first=True, bidirectional=bidirectional, dropout=0.5)
-        self.dropout = nn.Dropout(0.4)
-        num = 2 if bidirectional else 1
-        self.fc = nn.Sequential(
-            nn.Linear(768 * num, 768 * num // 2),
-            nn.Tanh(),
-            nn.Linear(768 * num // 2, 3)
-        )
+        kernel_sizes = [2, 3, 4]
+        kernel_num = 100
+        # kernel_num等于bert的tokenizer的vocab_size
+        self.convs = nn.ModuleList(
+            [nn.Conv2d(1, kernel_num, (k, 768)) for k in kernel_sizes])
+        self.dropout = nn.Dropout(0.3)
+        self.fc = nn.Linear(len(kernel_sizes) * kernel_num, 2)
         self.criteria = nn.CrossEntropyLoss()
 
-    def forward(self, x, att=None, label=None):
+    def forward(self, x, att, label=None):
         x = self.embedding(x)
-        # x, _ = self.lstm(x)
-        x, _ = self.rnn(x)
+        x = x.unsqueeze(1)
+        x = [F.relu(conv(x)).squeeze(3) for conv in self.convs]
+        x = [F.max_pool1d(i, i.size(2)).squeeze(2) for i in x]
+        x = torch.cat(x, 1)
         x = self.dropout(x)
-        x = x.mean(dim=1)
-        x = self.fc(x)
-        logit = F.softmax(x, -1)
+        logit = F.softmax(self.fc(x), -1)
 
         if label is not None:
-            loss = self.criteria(logit.view(-1, 3), label.view(-1))
+            loss = self.criteria(logit.view(-1, 2), label.view(-1))
             return loss, logit
         else:
             return None, logit
@@ -116,7 +112,7 @@ def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_
         pbar = tqdm(dev_loader)
         all_labels = []
         all_preds = []
-        confusion = torch.zeros(3, 3, dtype=torch.long)
+        confusion = torch.zeros(2, 2, dtype=torch.long)
         for i, (input_ids, attention_mask, label) in enumerate(pbar):
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
@@ -194,7 +190,7 @@ def predict(model, test_loader, device):
         all_preds = []
         pbar = tqdm(test_loader)
         all_labels = []
-        confusion = torch.zeros(3, 3, dtype=torch.long)
+        confusion = torch.zeros(2, 2, dtype=torch.long)
         for i, (input_ids, attention_mask, label) in enumerate(pbar):
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
@@ -259,9 +255,8 @@ def main():
     passer.add_argument('--lr', type=float, default=2e-4)
     passer.add_argument('--epochs', type=int, default=20)
     passer.add_argument('--save_path', type=str, default='./out_models/')
-    passer.add_argument('--model_name', choices=["baseline_bert", "cnn", "lstm"], default="lstm", type=str,
+    passer.add_argument('--model_name', choices=["baseline_bert", "cnn", "lstm"], default="cnn", type=str,
                         help="模型名")
-    passer.add_argument('--seq_len', type=int, default=64, help="序列长度")
 
     args = passer.parse_args()
     if not os.path.exists(args.save_path):
@@ -277,12 +272,12 @@ def main():
     # 加载数据
     print("开始加载数据")
     t1 = time.time()
-    train_loader, dev_loader, test_loader = get_dataloader(args.batch_size, args.seq_len)
+    train_loader, dev_loader, test_loader = get_dataloader(args.batch_size)
     print(f"加载数据完成, 耗时{time.time() - t1}s")
     # 加载模型,vocab_size等于BertTokenizer的vocab_size
     print("开始加载模型")
     vocab_size = 30522
-    model = BiLstmModel(vocab_size)
+    model = CNNModel(vocab_size)
     # 设置GPU
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if torch.cuda.device_count() > 1:
@@ -300,6 +295,7 @@ def main():
     save_path = './out_models/'
     if os.path.exists(save_path + f'best_{args.model_name}_model.pt'):
         model.load_state_dict(torch.load(save_path + f'best_{args.model_name}_model.pt'))
+    # model.load_state_dict(torch.load(save_path + f'best_baseline_bert_model.pt'))
     print("开始预测")
     predict(model, test_loader, device)
     print(f"预测完成,总耗时{time.time() - t1}s")

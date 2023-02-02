@@ -72,7 +72,7 @@ class BiLstmModel(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(768 * num, 768 * num // 2),
             nn.Tanh(),
-            nn.Linear(768 * num // 2, 3)
+            nn.Linear(768 * num // 2, 2)
         )
         self.criteria = nn.CrossEntropyLoss()
 
@@ -86,7 +86,7 @@ class BiLstmModel(nn.Module):
         logit = F.softmax(x, -1)
 
         if label is not None:
-            loss = self.criteria(logit.view(-1, 3), label.view(-1))
+            loss = self.criteria(logit.view(-1, 2), label.view(-1))
             return loss, logit
         else:
             return None, logit
@@ -116,7 +116,7 @@ def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_
         pbar = tqdm(dev_loader)
         all_labels = []
         all_preds = []
-        confusion = torch.zeros(3, 3, dtype=torch.long)
+        confusion = torch.zeros(2, 2, dtype=torch.long)
         for i, (input_ids, attention_mask, label) in enumerate(pbar):
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
@@ -194,7 +194,7 @@ def predict(model, test_loader, device):
         all_preds = []
         pbar = tqdm(test_loader)
         all_labels = []
-        confusion = torch.zeros(3, 3, dtype=torch.long)
+        confusion = torch.zeros(2, 2, dtype=torch.long)
         for i, (input_ids, attention_mask, label) in enumerate(pbar):
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)

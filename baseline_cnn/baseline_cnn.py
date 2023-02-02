@@ -98,6 +98,8 @@ def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_
         label = label.to(device)
         optimizer.zero_grad()
         loss, logits = model(input_ids, attention_mask, label=label)
+        if torch.cuda.device_count() > 1:
+            loss = torch.mean(loss)
         loss.backward()
         optimizer.step()
         pbar.set_description(f"train loss: {loss.item():.4f}")
@@ -110,6 +112,7 @@ def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_
         pbar = tqdm(dev_loader)
         all_labels = []
         all_preds = []
+        confusion = torch.zeros(3, 3, dtype=torch.long)
         for i, (input_ids, attention_mask, label) in enumerate(pbar):
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
@@ -127,6 +130,17 @@ def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_
                                                                                     presion,
                                                                                     recall))
             pbar.update(1)
+        for j in range(len(all_labels)):
+            confusion[all_preds[j], all_labels[j]] += 1
+
+        print("Confusion matrix:")
+        print(confusion)
+        with open(f'./log/confusion_matrix.txt', 'a') as f:
+            f.write("#" * 30)
+            f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+            f.write(f"confusion matrix on dev set: \n")
+            f.write(str(confusion) + '\n')
+
         final_acc = correct / total
         final_f1 = f1_score(all_labels, all_preds, average='macro')
         final_presion = precision_score(all_labels, all_preds, average='macro')
@@ -138,6 +152,15 @@ def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_
             'recall': final_recall
         }
         # print(eval_result)
+        # 记录此次实验的结果到result.txt文件中
+        with open('./log/result.txt', 'a') as f:
+            # 写入实验时间
+            # f.write("#" * 30 + "\n")
+            # f.write(" result:")
+            f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+            for key, value in eval_result.items():
+                f.write('{}: {}\t'.format(key, value))
+            f.write('\n')
 
         print(f"epoch {epoch} classification report: \n {classification_report(all_labels, all_preds)}")
         """
@@ -164,24 +187,66 @@ def train(args, model, train_loader, dev_loader, optimizer, device, epoch, save_
 def predict(model, test_loader, device):
     model.eval()
     with torch.no_grad():
-        preds = []
+        all_preds = []
         pbar = tqdm(test_loader)
-        labels = []
+        all_labels = []
+        confusion = torch.zeros(3, 3, dtype=torch.long)
         for i, (input_ids, attention_mask, label) in enumerate(pbar):
             input_ids = input_ids.to(device)
             attention_mask = attention_mask.to(device)
             # label = label.to(device)
             _, logits = model(input_ids, attention_mask)
             pred = torch.argmax(logits, dim=1)
-            preds.extend(pred.cpu().numpy().tolist())
-            labels.extend(label.cpu().numpy().tolist())
+            all_preds.extend(pred.cpu().numpy().tolist())
+            all_labels.extend(label.cpu().numpy().tolist())
+    for j in range(len(all_labels)):
+        confusion[all_preds[j], all_labels[j]] += 1
+
+    print("Confusion matrix:")
+    print(confusion)
+    with open(f'./log/test_confusion_matrix.txt', 'a') as f:
+        f.write("#" * 30)
+        f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+        f.write(f"confusion matrix on test set: \n")
+        f.write(str(confusion) + '\n')
     # 计算acc\presion\recall\f1
-    # acc = accuracy_score(labels, preds)
-    # f1 = f1_score(labels, preds, average='macro')
-    # presion = precision_score(labels, preds, average='macro')
-    # recall = recall_score(labels, preds, average='macro')
+    acc = accuracy_score(all_labels, all_preds)
+    f1 = f1_score(all_labels, all_preds, average='macro')
+    precision = precision_score(all_labels, all_preds, average='macro')
+    recall = recall_score(all_labels, all_preds, average='macro')
+    eval_result = {
+        'acc': acc,
+        'f1': f1,
+        'precision': precision,
+        'recall': recall
+    }
+    # 记录此次实验的结果到result.txt文件中
+    with open('./log/result.txt', 'a') as f:
+        # 写入实验时间
+        # f.write("#" * 30 + "\n")
+        f.write("test result:\n")
+        f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+        for key, value in eval_result.items():
+            f.write('{}: {}\t'.format(key, value))
+        f.write('\n')
+
+        # 以json文件的形式保存每一次的实验结果
+        if not os.path.exists('./log/best_result.json'):
+            with open('./log/best_result.json', 'w') as f:
+                json.dump(eval_result, f)
+        else:
+            # 保存每一次的实验结果
+            with open('./log/best_result.json', 'r') as f:
+                old_result = json.load(f)
+            # 比较新旧实验结果，如果新实验结果更好，则保存新实验结果
+            if eval_result['f1'] > old_result['f1']:
+                # 保存模型checkpoint到args.save_path路径下
+                torch.save(model.state_dict(), './out_models/' + 'best_model.pt')
+                # 保存新实验结果
+                with open('./log/best_result.json', 'w') as f:
+                    json.dump(eval_result, f)
     # print("final test acc: {} f1: {} presion: {} recall: {}".format(acc, f1, presion, recall))
-    print(f"final test classification report: \n {classification_report(labels, preds)}")
+    print(f"final test classification report: \n {classification_report(all_labels, all_preds)}")
 
 
 def main():
@@ -215,6 +280,8 @@ def main():
     model = CNNModel(vocab_size)
     # 设置GPU
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
     model.to(device)
     # 设置优化器
     optimizer = AdamW(model.parameters(), lr=args.lr)
