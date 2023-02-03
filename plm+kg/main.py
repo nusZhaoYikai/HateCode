@@ -13,7 +13,7 @@ import warnings
 from utils import *
 from models import *
 from tqdm import tqdm
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score, classification_report
 import warnings
 # from openprompt.data_utils import InputExample
 # from openprompt.prompts import ManualTemplate
@@ -133,6 +133,8 @@ def eval(args, eval_data, model=None, type='dev', metrics='acc'):
     if model is None:
         model = torch.load(args.savemodel_path).to(args.device)
     model.eval()
+    # Confusion matrix.
+    confusion = torch.zeros(3, 3, dtype=torch.long)
 
     all_true_labels, all_pred_labels = [], []
     with torch.no_grad():
@@ -141,6 +143,9 @@ def eval(args, eval_data, model=None, type='dev', metrics='acc'):
             true_labels = batch['labels']
 
             pred_labels = model(input_ids, mask_ids)
+            preds = pred_labels.argmax(dim=-1).detach()
+            for j in range(pred_labels.size()[0]):
+                confusion[preds[j], true_labels[j]] += 1
 
             all_true_labels += true_labels.detach().numpy().tolist()
             all_pred_labels += pred_labels.argmax(dim=-1).detach().cpu().numpy().tolist()
@@ -151,6 +156,20 @@ def eval(args, eval_data, model=None, type='dev', metrics='acc'):
     acc = accuracy_score(all_true_labels, all_pred_labels)
 
     eval_result = {"precision": precision, "recall": recall, "f1": f1, "acc": acc}
+    print(f"classification report on {type} set:")
+    print(classification_report(all_true_labels, all_pred_labels, digits=4))
+    print(f"confusion matrix on {type} set:")
+    print(confusion)
+
+    # 将混淆矩阵打印到文件中
+    if not os.path.exists("./log"):
+        os.mkdir("./log")
+    with open('./log/confusion_matrix.txt', 'a') as f:
+        f.write("#" * 30)
+        f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+        f.write(f"confusion matrix on {type} set: \n")
+        f.write(str(confusion)+'\n')
+
     """
     在result.text中保存每一次的结果
     在best_result.json中保存最好的结果
@@ -164,7 +183,7 @@ def eval(args, eval_data, model=None, type='dev', metrics='acc'):
         f.write('time: ' + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
         for key, value in eval_result.items():
             f.write('{}: {}\t'.format(key, value))
-        f.write("#" * 30+"\n")
+        f.write("#" * 30 + "\n")
 
     # 以json文件的形式保存每一次的实验结果
     if not os.path.exists('./log/best_result.json'):
